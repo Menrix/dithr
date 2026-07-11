@@ -16,7 +16,7 @@ Current states:
 
 Known issues:
 - [ ] You'll need to close and reopen the Sync dialog after encounting errors
-- [ ] Switching devices with diffetent palettes doesn't work. You'll need to close and reopen the app.
+- [x] ~~Switching devices with diffetent palettes doesn't work. You'll need to close and reopen the app.~~
 
 Tested on:
 - Good Display 3.6 Spectra 6 NFC
@@ -24,6 +24,7 @@ Tested on:
 - Good Display 4.20 BWRY
 - Xteink Tong card
 - Reink 4-color iPhone case
+- EzSign 2.9" BWRY
 
 TODO:
 - Better editor: add text, layers...
