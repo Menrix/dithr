@@ -1,0 +1,5 @@
+allowBuilds:
+  canvas: true
+  lzo: true
+patchedDependencies:
+  img-comparison-slider@8.0.7: patches/img-comparison-slider@8.0.7.patch

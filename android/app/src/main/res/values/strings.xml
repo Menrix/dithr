@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">DITHR</string>
+    <string name="title_activity_main">DITHR</string>
+    <string name="package_name">com.redphx.dithr</string>
+    <string name="custom_url_scheme">com.redphx.dithr</string>
+</resources>
