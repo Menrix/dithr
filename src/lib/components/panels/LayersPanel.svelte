@@ -265,11 +265,11 @@ export {
     <div class="flex flex-wrap gap-3 items-center mb-1">
         <span>Add</span>
         <div class="dropdown dropdown-down dropdown-start">
-            <button class="dithr-btn btn-sm px-2">
+            <div tabindex="0" role="button" class="dithr-btn btn-sm px-2">
                 <ImageSquareIcon size={18} weight="duotone" color="currentColor" />
                 …
-            </button>
-            <div class="dropdown-content mt-2">
+            </div>
+            <div class="dropdown-content mt-2" tabindex="-1">
                 <div class="grid gap-5 p-4 w-60" tabindex="-1">
                     <div class="flex text-xs border-b-2 pb-2 border-solid border-[#323232]">
                         <label class="setting-label flex-1" for={`${uid}-cbx-trim-image`}>Trim edges</label>
@@ -298,11 +298,11 @@ export {
         </div>
 
         <div class="dropdown dithr-dropdown dropdown-down dropdown-start">
-            <button class="dithr-btn btn-sm px-2">
+            <div tabindex="0" role="button" class="dithr-btn btn-sm px-2">
                 <ShapesIcon size={18} weight="duotone" color="currentColor" />
                 …
-            </button>
-            <div class="dropdown-content mt-2">
+            </div>
+            <div class="dropdown-content mt-2" tabindex="-1">
                 <ul class="menu">
                     <li onpointerdown={() => addRect()}>
                         <a><RectangleIcon size={18} color="currentColor" /> Rectangle</a>

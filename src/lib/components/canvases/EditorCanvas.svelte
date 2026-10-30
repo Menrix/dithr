@@ -1,7 +1,8 @@
 <script lang="ts">
 import { canvasHistoryManager } from "$lib/stores/managers.svelte";
-import { Canvas, Path } from "fabric";
+import { Canvas, FabricObject, Path } from "fabric";
 import { onMount } from "svelte";
+import { enableTouchGestures, keepControlSizeOnZoom } from "$lib/editor/TouchGestures";
 
 let {
     width,
@@ -111,7 +112,12 @@ onMount(() => {
         selection: false,  // disable marquee selection
     });
 
+    // Pinch to scale / twist to rotate with two fingers (phones, tablets)
+    const removeTouchGestures = enableTouchGestures(fabricCanvas);
+
     onMounted();
+
+    return removeTouchGestures;
 });
 
 $effect(() => {
@@ -125,6 +131,11 @@ $effect(() => {
     }
 
     fabricCanvas.setViewportTransform([1, 0, 0, 1, padding, padding]);
+});
+
+// Corner handles keep the same size on screen at every zoom level
+$effect(() => {
+    keepControlSizeOnZoom(fabricCanvas, FabricObject, zoomFactor);
 });
 
 export {

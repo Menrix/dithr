@@ -14,4 +14,7 @@ export interface EinkIsoDepPlugin {
     removeAllListeners(): Promise<void>;
 }
 
-export const EinkIsoDep = registerPlugin<EinkIsoDepPlugin>('EinkIsoDep');
+// Android uses the native plugin; in the browser a PN532 USB NFC module is used via Web Serial.
+export const EinkIsoDep = registerPlugin<EinkIsoDepPlugin>('EinkIsoDep', {
+    web: () => import('./EinkIsoDepWebSerial').then(m => new m.EinkIsoDepWebSerial()),
+});

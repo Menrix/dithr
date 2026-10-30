@@ -1,5 +1,13 @@
 # DITHR
 
+> **This is a fork of [redphx/dithr](https://github.com/redphx/dithr)** with added support for a
+> USB NFC writer (PN532) in the web version, sending images from iPhone via a Mac, and touch
+> improvements. See **[NFC-WRITER.md](./NFC-WRITER.md)** for setup and details.
+>
+> The changes in this fork were made with AI assistance. This fork is not affiliated with the
+> original author – please don't report issues of this fork to the original project.
+
+
 Free and open-source tool for dithering images, build especially for epaper & full-color screens.
 
 ## Features

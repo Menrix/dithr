@@ -17,6 +17,13 @@ import { NfcEinkDevice } from '$lib/devices/NfcEinkDevice';
 import { NfcFmscEinkDevice } from '$lib/devices/NfcFmscEinkDevice';
 import { Device as CapacitorDevice } from '@capacitor/device';
 import { KeepAwake } from '@capacitor-community/keep-awake';
+import { Capacitor } from '@capacitor/core';
+import { isWebSerialAvailable } from '../../../plugins/EinkIsoDepWebSerial';
+import { REMOTE_AVAILABLE, sendToStation } from '$lib/remote-sync';
+
+const IS_NATIVE_APP = Capacitor.isNativePlatform();
+// Phone without NFC access (e.g. iPhone): send the image to the Mac, which writes it with the USB writer
+const IS_REMOTE = !IS_NATIVE_APP && !isWebSerialAvailable() && REMOTE_AVAILABLE;
 
 
 export type SyncStatuses = {
@@ -83,6 +90,7 @@ let sendingStatus = $derived(syncStatuses[SyncStep.SENDING]);
 let refreshingStatus = $derived(syncStatuses[SyncStep.REFRESHING]);
 
 let errorMessage: undefined | string = $state(undefined);
+let remoteWaiting = $state(false);
 
 function reset() {
     errorMessage = undefined;
@@ -107,6 +115,62 @@ function reset() {
     }
 }
 
+function createHandler(): SyncProgressHandler {
+    return {
+        onTransferProgress(currentScreen: number, totalScreens: number, currentPacket: number, totalPackets: number) {
+            currentStep = SyncStep.SENDING;
+
+            if (sendingStatus.startTime === -1) {
+                sendingStatus.startTime = +new Date;
+            } else if (currentScreen === totalScreens && currentPacket === totalPackets) {
+                sendingStatus.endTime = +new Date;
+            }
+
+            sendingStatus.currentScreen = currentScreen;
+            sendingStatus.totalScreens = totalScreens;
+            sendingStatus.currentPacket = currentPacket;
+            sendingStatus.totalPackets = totalPackets;
+        },
+
+        onRefreshCountdown(remaining: number) {
+            currentStep = SyncStep.REFRESHING;
+            if (remaining >= 0) {
+                refreshingStatus.refreshRemaining = remaining;
+            } else {
+                refreshingStatus.refreshRemaining = 0;
+                refreshingStatus.refreshOvertime = -remaining;
+            }
+        },
+
+        onError(error: string) {
+            throw new Error('Function not implemented.');
+        },
+
+        switchStep: function (step: SyncStep) {
+            const now = +new Date;
+            if (step === SyncStep.SENDING) {
+                sendingStatus.startTime = now;
+                sendingStatus.currentScreen = 0;
+                sendingStatus.totalScreens = 0;
+                sendingStatus.currentPacket = 0;
+                sendingStatus.totalPackets = 0;
+            } else if (step === SyncStep.REFRESHING) {
+                sendingStatus.endTime = now;
+                refreshingStatus.startTime = now;
+
+                totalTimeSending = Number(((sendingStatus.endTime - sendingStatus.startTime) / 1000).toFixed(1));
+            } else if (step === SyncStep.FINISHED) {
+                refreshingStatus.endTime = now;
+                totalTimeRefreshing = Number(((refreshingStatus.endTime - refreshingStatus.startTime) / 1000).toFixed(1));
+
+                totalTime = Number((totalTimeSending + totalTimeRefreshing).toFixed(1));
+            }
+
+            currentStep = step;
+        }
+    };
+}
+
 async function scanNfc() {
     reset();
 
@@ -122,6 +186,16 @@ async function scanNfc() {
         }, 'image/webp', 0.1,
     );
 
+    if (IS_REMOTE) {
+        remoteWaiting = false;
+        sendToStation(targetDevice.deviceInfo.id, imageData, createHandler(), () => { remoteWaiting = true; })
+            .catch(error => {
+                errorMessage = '' + (error?.message ?? error);
+                console.error(errorMessage);
+            });
+        return;
+    }
+
     try {
         // Clear old listeners before binding to avoid stacking duplicate callback handlers
         await EinkIsoDep.removeAllListeners();
@@ -132,71 +206,19 @@ async function scanNfc() {
             reset();
 
             try {
-                await KeepAwake.keepAwake();
+                await KeepAwake.keepAwake().catch(() => {});
 
                 await EinkIsoDep.connect({ timeout: 10000 });
                 let hardwareConfig = targetDevice instanceof NfcFmscEinkDevice ? await NfcFmscEinkDevice.getHardwareConfig() : undefined;
 
-                const handler: SyncProgressHandler = {
-                    onTransferProgress(currentScreen: number, totalScreens: number, currentPacket: number, totalPackets: number) {
-                        currentStep = SyncStep.SENDING;
-
-                        if (sendingStatus.startTime === -1) {
-                            sendingStatus.startTime = +new Date;
-                        } else if (currentScreen === totalScreens && currentPacket === totalPackets) {
-                            sendingStatus.endTime = +new Date;
-                        }
-
-                        sendingStatus.currentScreen = currentScreen;
-                        sendingStatus.totalScreens = totalScreens;
-                        sendingStatus.currentPacket = currentPacket;
-                        sendingStatus.totalPackets = totalPackets;
-                    },
-
-                    onRefreshCountdown(remaining: number) {
-                        currentStep = SyncStep.REFRESHING;
-                        if (remaining >= 0) {
-                            refreshingStatus.refreshRemaining = remaining;
-                        } else {
-                            refreshingStatus.refreshRemaining = 0;
-                            refreshingStatus.refreshOvertime = -remaining;
-                        }
-                    },
-
-                    onError(error: string) {
-                        throw new Error('Function not implemented.');
-                    },
-
-                    switchStep: function (step: SyncStep) {
-                        const now = +new Date;
-                        if (step === SyncStep.SENDING) {
-                            sendingStatus.startTime = now;
-                            sendingStatus.currentScreen = 0;
-                            sendingStatus.totalScreens = 0;
-                            sendingStatus.currentPacket = 0;
-                            sendingStatus.totalPackets = 0;
-                        } else if (step === SyncStep.REFRESHING) {
-                            sendingStatus.endTime = now;
-                            refreshingStatus.startTime = now;
-
-                            totalTimeSending = Number(((sendingStatus.endTime - sendingStatus.startTime) / 1000).toFixed(1));
-                        } else if (step === SyncStep.FINISHED) {
-                            refreshingStatus.endTime = now;
-                            totalTimeRefreshing = Number(((refreshingStatus.endTime - refreshingStatus.startTime) / 1000).toFixed(1));
-
-                            totalTime = Number((totalTimeSending + totalTimeRefreshing).toFixed(1));
-                        }
-
-                        currentStep = step;
-                    }
-                }
+                const handler = createHandler();
                 currentStep = SyncStep.SENDING;
                 await targetDevice.syncImage(hardwareConfig, imageData, handler);
             } catch (error) {
                 errorMessage = 'Transmission halted: ' + error;
                 console.error(errorMessage);
             } finally {
-                await KeepAwake.allowSleep();
+                await KeepAwake.allowSleep().catch(() => {});
                 await EinkIsoDep.close().catch(() => {});
                 await EinkIsoDep.stopScanning().catch(() => {});
                 console.log('Session complete. Scanning loop wound down.');
@@ -214,7 +236,7 @@ async function scanNfc() {
 
 export async function showModal() {
     reset();
-    await KeepAwake.allowSleep();
+    await KeepAwake.allowSleep().catch(() => {});
 
     await scanNfc();
     dialog.showModal();
@@ -222,11 +244,11 @@ export async function showModal() {
 
 onMount(async () => {
     const deviceManufacturer = (await CapacitorDevice.getInfo()).manufacturer;
-    isNfcUnsupported = deviceManufacturer in UNSUPPORTED_MANUFACTURERS;
+    isNfcUnsupported = IS_NATIVE_APP && deviceManufacturer in UNSUPPORTED_MANUFACTURERS;
 
     dialog.addEventListener('close', async e => {
         reset();
-        await KeepAwake.allowSleep();
+        await KeepAwake.allowSleep().catch(() => {});
 
         await EinkIsoDep.close().catch(() => {});
         await EinkIsoDep.removeAllListeners();
@@ -334,7 +356,15 @@ onMount(async () => {
                         {@const deviceInfo = targetDevice.deviceInfo}
                         <div class="mb-3">
                             <p class="text-sm">
-                                Place your phone over the Eink display to start syncing.
+                                {#if IS_REMOTE}
+                                    {remoteWaiting ? 'Place the Eink display on the NFC writer at the Mac now.' : 'Sending the image to the Mac…'}
+                                    <span class="text-xs opacity-70">(The Mac writes it with the USB NFC writer.)</span>
+                                {:else if IS_NATIVE_APP}
+                                    Place your phone over the Eink display to start syncing.
+                                {:else}
+                                    Place the Eink display on the USB NFC writer to start syncing.
+                                    <span class="text-xs opacity-70">(First time: pick the writer's serial port in the browser window.)</span>
+                                {/if}
                                 <span class="text-warning text-xs">Warning: syncing to the wrong display may corrupt it!</span>
                             </p>
                         </div>

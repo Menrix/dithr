@@ -22,8 +22,27 @@ import type { Device } from '$lib/devices/Device';
 import { CANVAS_SIZE_MAX } from '$lib/constants';
 import { blurActive, clampCanvasSize } from '$lib/utils';
 import { EDITOR_CANVAS_PADDING } from '$lib/shared';
+import { isWebSerialAvailable } from '../../plugins/EinkIsoDepWebSerial';
+import { REMOTE_AVAILABLE, startStation, type StationStatus } from '$lib/remote-sync';
+import { useTouchFriendlyControls } from '$lib/editor/TouchGestures';
 
 const IS_NATIVE_APP = Capacitor.isNativePlatform();
+// Browser + USB NFC writer (PN532) via Web Serial (Chrome / Edge)
+const HAS_WEB_SERIAL = isWebSerialAvailable();
+// Phones without NFC access can send the image to the Mac station (same Wi-Fi)
+const CAN_SYNC_NFC = IS_NATIVE_APP || HAS_WEB_SERIAL || REMOTE_AVAILABLE;
+// This tab is on the Mac with the USB NFC writer: act as station for the phone
+const IS_STATION = !IS_NATIVE_APP && HAS_WEB_SERIAL && REMOTE_AVAILABLE;
+let stationStatus: StationStatus = $state('off');
+let stationText = $state('');
+
+onMount(() => {
+    if (!IS_STATION) return;
+    return startStation((status, text) => {
+        stationStatus = status;
+        stationText = text ?? '';
+    });
+});
 
 const uid = $props.id();
 
@@ -60,9 +79,11 @@ FabricObject.ownDefaults.cornerStrokeColor = '#fff';
 FabricObject.ownDefaults.cornerSize = 10;
 FabricObject.ownDefaults.cornerStyle = 'circle';
 FabricObject.ownDefaults.transparentCorners = false;
+// Bigger corner handles on touch screens, so they can be grabbed with a finger
+useTouchFriendlyControls(FabricObject);
 
 async function showSyncNfcModal() {
-    if (IS_NATIVE_APP && targetDevice.deviceInfo.class.prototype instanceof EinkDevice) {
+    if (CAN_SYNC_NFC && targetDevice.deviceInfo.class.prototype instanceof EinkDevice) {
         canvasPanel.requestRenderPreview(true);
         await syncNfcDialog.showModal();
     }
@@ -254,8 +275,8 @@ div[data-native-app="false"] {
             </div>
             {#if targetDevice.deviceInfo.connectionType === 'nfc'}
                 {@const isEinkDevice = targetDevice.deviceInfo.class.prototype instanceof EinkDevice}
-                {@const supported = IS_NATIVE_APP && isEinkDevice}
-                {@const tip = activeView !== 'dither' ? '' : !isEinkDevice ? 'Device not yet supported' : !IS_NATIVE_APP ? 'Only available in the app version' : ''}
+                {@const supported = CAN_SYNC_NFC && isEinkDevice}
+                {@const tip = activeView !== 'dither' ? '' : !isEinkDevice ? 'Device not yet supported' : !CAN_SYNC_NFC ? 'Use Chrome or Edge with a USB NFC writer, or the Android app' : ''}
                 <button
                     onclick={async () => await showSyncNfcModal()}
                     class="btn btn-sync tooltip tooltip-error tooltip-bottom tooltip-end"
@@ -296,7 +317,15 @@ div[data-native-app="false"] {
     canvasPanel={canvasPanel}
     />
 
-{#if IS_NATIVE_APP}
+{#if stationStatus !== 'off'}
+    <div class="fixed bottom-2 left-2 z-50 rounded px-3 py-1 text-xs shadow pointer-events-none
+                {stationStatus === 'ready' ? 'bg-neutral text-neutral-content opacity-70' : 'bg-info text-info-content'}"
+         title="Phones in the same Wi-Fi can send images through this Mac">
+        📡 {stationStatus === 'ready' ? 'Mac station ready (keep this tab visible)' : stationText}
+    </div>
+{/if}
+
+{#if CAN_SYNC_NFC}
     <SyncNfcDialog
         bind:this={syncNfcDialog}
         canvasPanel={canvasPanel}
