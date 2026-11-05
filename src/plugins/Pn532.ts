@@ -29,6 +29,8 @@ const CMD_IN_LIST_PASSIVE_TARGET = 0x4a;
 const CMD_IN_RELEASE = 0x52;
 
 const ACK_FRAME = new Uint8Array([0x00, 0x00, 0xff, 0x00, 0xff, 0x00]);
+/** HSU wake-up preamble (as libnfc / the ELECHOUSE tester): 55 55 followed by 14 x 00 */
+const WAKEUP_PREAMBLE = new Uint8Array([0x55, 0x55, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
 
 /** Status byte meanings from the PN532 user manual, table 7-1 (subset). */
 const STATUS_TEXT: Record<number, string> = {
@@ -116,14 +118,16 @@ export class Pn532 {
         let lastError: unknown;
         for (let attempt = 1; attempt <= 3; attempt++) {
             try {
-                await this.wakeUp();
+                // The wake-up preamble must be sent together with the command in ONE
+                // write – with a pause in between, the chip falls asleep again.
                 // Normal mode, timeout 1 s, use IRQ – this also leaves LowVbat mode
-                await this.command(CMD_SAM_CONFIGURATION, [0x01, 0x14, 0x01], 1000);
-                const fw = await this.getFirmwareVersion();
+                await this.command(CMD_SAM_CONFIGURATION, [0x01, 0x14, 0x01], 1000, true);
+                const fwRaw = await this.command(CMD_GET_FIRMWARE_VERSION, [], 1000, true);
+                const fw = Pn532.parseFirmware(fwRaw);
                 if (this.debug) console.log('[PN532] firmware', fw);
                 // MaxRetries: ATR=0xFF, PSL=0x01, passive activation=0x02
                 // (so InListPassiveTarget returns quickly and we can poll in a loop)
-                await this.command(CMD_RF_CONFIGURATION, [0x05, 0xff, 0x01, 0x02]);
+                await this.command(CMD_RF_CONFIGURATION, [0x05, 0xff, 0x01, 0x02], 1000, true);
                 return fw;
             } catch (e) {
                 lastError = e;
@@ -249,16 +253,37 @@ export class Pn532 {
     }
 
     /** Send a command, wait for ACK + response. Commands are serialized. */
-    async command(cmd: number, params: ArrayLike<number> = [], timeoutMs = 1000): Promise<Uint8Array> {
+    async command(cmd: number, params: ArrayLike<number> = [], timeoutMs = 1000, wake = false): Promise<Uint8Array> {
         const run = async () => {
             const payload = new Uint8Array(1 + params.length);
             payload[0] = cmd;
             payload.set(Array.from(params), 1);
 
-            this.rx = [];
-            await this.write(buildFrame(payload));
+            let frame = buildFrame(payload);
+            if (wake) {
+                const withPreamble = new Uint8Array(WAKEUP_PREAMBLE.length + frame.length);
+                withPreamble.set(WAKEUP_PREAMBLE, 0);
+                withPreamble.set(frame, WAKEUP_PREAMBLE.length);
+                frame = withPreamble;
+            }
 
-            const ack = await this.readFrame(Math.min(timeoutMs, 1000));
+            this.rx = []; // discard junk bytes
+            await this.write(frame);
+
+            let ack: Uint8Array | null;
+            try {
+                ack = await this.readFrame(Math.min(timeoutMs, 1000));
+            } catch (e) {
+                if (wake) throw e;
+                // No ACK: the chip may have fallen asleep – wake it and send once more
+                if (this.debug) console.warn('[PN532] no ACK, retrying with wake-up preamble');
+                const again = new Uint8Array(WAKEUP_PREAMBLE.length + frame.length);
+                again.set(WAKEUP_PREAMBLE, 0);
+                again.set(frame, WAKEUP_PREAMBLE.length);
+                this.rx = [];
+                await this.write(again);
+                ack = await this.readFrame(Math.min(timeoutMs, 1000));
+            }
             if (ack !== null) throw new Pn532Error('Expected ACK from NFC writer');
 
             const response = await this.readFrame(timeoutMs);
@@ -279,22 +304,15 @@ export class Pn532 {
         await this.write(ACK_FRAME);
     }
 
-    private async wakeUp() {
-        // HSU wake-up preamble exactly as libnfc sends it: 55 55 followed by 14 x 00
-        const wake = new Uint8Array(16);
-        wake[0] = 0x55;
-        wake[1] = 0x55;
-        this.rx = []; // discard junk bytes
-        await this.write(wake);
-        await new Promise(r => setTimeout(r, 10));
-    }
-
     // ------------------------------------------------------------ commands
 
-    async getFirmwareVersion() {
-        const r = await this.command(CMD_GET_FIRMWARE_VERSION);
+    static parseFirmware(r: Uint8Array) {
         if (r.length < 4) throw new Pn532Error('Bad firmware response');
         return { ic: r[0], version: r[1], revision: r[2], support: r[3], text: `PN5${r[0].toString(16)} v${r[1]}.${r[2]}` };
+    }
+
+    async getFirmwareVersion() {
+        return Pn532.parseFirmware(await this.command(CMD_GET_FIRMWARE_VERSION));
     }
 
     async rfOff() {
