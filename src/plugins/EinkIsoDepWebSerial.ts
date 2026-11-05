@@ -14,6 +14,7 @@ import { Pn532, type ByteStreamPort, type Pn532Target } from './Pn532';
 // Minimal Web Serial typings (avoid an extra @types dependency)
 interface SerialPortLike extends ByteStreamPort {
     open(options: { baudRate: number }): Promise<void>;
+    setSignals?(signals: { dataTerminalReady?: boolean; requestToSend?: boolean }): Promise<void>;
     close(): Promise<void>;
     getInfo?(): { usbVendorId?: number; usbProductId?: number };
 }
@@ -70,16 +71,34 @@ export class EinkIsoDepWebSerial extends WebPlugin {
         }
 
         await port.open({ baudRate: BAUD_RATE });
-        const pn532 = new Pn532(port);
-        pn532.debug = localStorage?.getItem?.('dithr.pn532.debug') === '1';
-        try {
-            const fw = await pn532.open();
-            this.readerName = fw.text;
-        } catch (e) {
-            await pn532.close().catch(() => {});
+        const debug = localStorage?.getItem?.('dithr.pn532.debug') === '1';
+
+        // Try normal start-up; if the writer stays silent, try again with the
+        // DTR/RTS control lines switched off (on some boards they hold the chip in reset).
+        let pn532: Pn532 | null = null;
+        let lastError: unknown;
+        for (const signals of [null, { dataTerminalReady: false, requestToSend: false }]) {
+            if (signals) {
+                try { await port.setSignals?.(signals); } catch { /* not supported */ }
+                await new Promise(r => setTimeout(r, 300));
+            }
+            const candidate = new Pn532(port);
+            candidate.debug = debug;
+            try {
+                const fw = await candidate.open();
+                this.readerName = fw.text;
+                pn532 = candidate;
+                if (debug) console.log('[PN532] ready:', fw.text, signals ? '(DTR/RTS off)' : '');
+                break;
+            } catch (e) {
+                lastError = e;
+                await candidate.close().catch(() => {});
+            }
+        }
+        if (!pn532) {
             await port.close().catch(() => {});
             throw new Error(
-                'NFC writer found, but it does not answer. Is the mode switch set to UART/HSU? (' + (e as Error).message + ')',
+                'The NFC writer was found, but it does not answer. Unplug it, plug it in again and retry. (' + (lastError as Error)?.message + ')',
             );
         }
 

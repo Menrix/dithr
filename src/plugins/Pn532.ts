@@ -94,6 +94,8 @@ export class Pn532 {
     private rxWaiters: Array<() => void> = [];
     private readLoopDone: Promise<void> | null = null;
     private busy: Promise<unknown> = Promise.resolve();
+    /** Total bytes received from the writer (for diagnostics) */
+    public bytesReceived = 0;
     public debug = false;
 
     constructor(private readonly port: ByteStreamPort) {}
@@ -108,16 +110,28 @@ export class Pn532 {
         this.reader = this.port.readable.getReader();
         this.readLoopDone = this.readLoop();
 
-        await this.wakeUp();
-        const fw = await this.getFirmwareVersion();
-        if (this.debug) console.log('[PN532] firmware', fw);
-
-        // Normal mode, no SAM, use IRQ
-        await this.command(CMD_SAM_CONFIGURATION, [0x01, 0x14, 0x01]);
-        // MaxRetries: ATR=0xFF, PSL=0x01, passive activation=0x02
-        // (so InListPassiveTarget returns quickly and we can poll in a loop)
-        await this.command(CMD_RF_CONFIGURATION, [0x05, 0xff, 0x01, 0x02]);
-        return fw;
+        // Same start-up sequence as libnfc's pn532_uart driver:
+        // a freshly powered PN532 is in "LowVbat" mode and only reacts to
+        // SAMConfiguration after the HSU wake-up preamble. Other commands are ignored.
+        let lastError: unknown;
+        for (let attempt = 1; attempt <= 3; attempt++) {
+            try {
+                await this.wakeUp();
+                // Normal mode, timeout 1 s, use IRQ – this also leaves LowVbat mode
+                await this.command(CMD_SAM_CONFIGURATION, [0x01, 0x14, 0x01], 1000);
+                const fw = await this.getFirmwareVersion();
+                if (this.debug) console.log('[PN532] firmware', fw);
+                // MaxRetries: ATR=0xFF, PSL=0x01, passive activation=0x02
+                // (so InListPassiveTarget returns quickly and we can poll in a loop)
+                await this.command(CMD_RF_CONFIGURATION, [0x05, 0xff, 0x01, 0x02]);
+                return fw;
+            } catch (e) {
+                lastError = e;
+                if (this.debug) console.warn(`[PN532] start attempt ${attempt} failed:`, e);
+                await new Promise(r => setTimeout(r, 150));
+            }
+        }
+        throw new Pn532Error(`${(lastError as Error)?.message ?? lastError} – bytes received from the writer: ${this.bytesReceived}`);
     }
 
     async close() {
@@ -141,6 +155,8 @@ export class Pn532 {
             if (result.done) break;
             if (result.value) {
                 for (const b of result.value) this.rx.push(b);
+                this.bytesReceived += result.value.length;
+                if (this.debug) console.log('[PN532] raw <<', hex(result.value));
                 const waiters = this.rxWaiters;
                 this.rxWaiters = [];
                 waiters.forEach(w => w());
@@ -264,11 +280,13 @@ export class Pn532 {
     }
 
     private async wakeUp() {
-        // HSU wake-up: long preamble of 0x55 followed by zeros
-        const wake = new Uint8Array(24);
-        wake.fill(0x55, 0, 2);
+        // HSU wake-up preamble exactly as libnfc sends it: 55 55 followed by 14 x 00
+        const wake = new Uint8Array(16);
+        wake[0] = 0x55;
+        wake[1] = 0x55;
+        this.rx = []; // discard junk bytes
         await this.write(wake);
-        await new Promise(r => setTimeout(r, 50));
+        await new Promise(r => setTimeout(r, 10));
     }
 
     // ------------------------------------------------------------ commands
